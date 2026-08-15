@@ -13,6 +13,32 @@ from typing import Iterator
 from secretary.config import core_root, flatten_paths, instance_root, load_config
 
 
+def _link_dir(link: Path, target: Path) -> None:
+    """Create a passthrough link so writes under `link` land in `target`.
+
+    Prefers a real symlink (works on POSIX; on Windows requires Developer
+    Mode or admin — see WinError 1314). Falls back to an NTFS directory
+    junction on Windows, which any unprivileged user can create and which
+    writes through to `target` just like a symlink for local paths.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError:
+        if os.name != "nt":
+            raise
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise OSError(
+            f"Could not create symlink or junction for {link} -> {target}: "
+            f"{result.stderr or result.stdout}"
+        )
+
+
 def _legacy_symlinks(instance: Path, flat: dict[str, str]) -> list[tuple[str, Path]]:
     """Map legacy build.py roots → instance paths."""
     links: list[tuple[str, Path]] = []
@@ -57,7 +83,7 @@ def staged_build_root() -> Iterator[Path]:
         for name, target in _legacy_symlinks(instance, flat):
             link = root / name
             if not link.exists():
-                link.symlink_to(target, target_is_directory=True)
+                _link_dir(link, target)
         yield root
 
 
